@@ -4,6 +4,11 @@
 #include <stdint.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/types.h>
 
 /* Default listening port */
 #define PORT_DEFAULT    8601
