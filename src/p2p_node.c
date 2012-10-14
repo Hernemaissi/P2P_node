@@ -35,47 +35,6 @@ char* build_join_accept_message(uint8_t ttl, uint8_t msg_type, uint16_t org_port
 	return msg;
 }
 
-void handle_message(struct P2P_h *header, int sendersock) {
-	if (header->version != P_VERSION || header->ttl <= 0) {
-		return;
-	}
-	uint8_t type = header->msg_type;
-	switch(type) {
-	case MSG_PING:
-		if (header->ttl == PING_TTL_HB) {
-			//Answer with Pong A message
-			struct P2P_h h = build_header(1, MSG_PONG, PORT_DEFAULT, 0, NODE_IP, MSG_ID);
-			if (send(sendersock, h, HLEN, 0) == -1)
-			                perror("send");
-		} else {
-			//Answer with Pong B message
-		}
-		break;
-	case MSG_QUERY:
-		//If hit, send MSG_QHIT back, send this forward to 5 peers
-		break;
-	case MSG_QHIT:
-		//If hit for a message we sent, print value or something
-		//Otherwise, consult the table to sent it back reverse path
-		break;
-	case MSG_BYE:
-		//Kill tcp connection
-		break;
-	case MSG_JOIN:
-		if (header->length == 0) {
-			//Join request, send reply
-			//Also add socket to writable sockets
-			char *msg = build_join_accept_message(1, MSG_JOIN, PORT_DEFAULT, JOINLEN, NODE_IP, MSG_ID);
-			if (send(sendersock, msg, HLEN + JOINLEN, 0) == -1)
-						                perror("send");
-		}else {
-			//Join Reply
-			//If accept, add socket to writable sockets
-		}
-		break;
-	}
-}
-
 int main(void)
 {
 	//TODO: Connection to bootstrap server
@@ -157,7 +116,61 @@ int main(void)
     // keep track of the biggest file descriptor
     fdmax = listener; // so far, it's this one
 
-    // main loop
+
+    int bootfd;
+	struct addrinfo *servinfo;
+	char s[INET6_ADDRSTRLEN];
+
+	memset(&hints, 0, sizeof hints);
+	hints.ai_family = AF_UNSPEC;
+	hints.ai_socktype = SOCK_STREAM;
+
+	if ((rv = getaddrinfo(IP_OF_BOOTSTRAP, PORT_DEFAULT, &hints, &servinfo)) != 0) {
+		fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(rv));
+		return 1;
+	}
+
+	// loop through all the results and connect to the first we can
+	for (p = servinfo; p != NULL; p = p->ai_next) {
+		if ((bootfd = socket(p->ai_family, p->ai_socktype, p->ai_protocol))
+				== -1) {
+			perror("client: socket");
+			continue;
+		}
+
+		if (connect(bootfd, p->ai_addr, p->ai_addrlen) == -1) {
+			close(bootfd);
+			perror("client: connect");
+			continue;
+		}
+
+		break;
+	}
+
+	if (p == NULL) {
+		fprintf(stderr, "client: failed to connect\n");
+		return 2;
+	}
+
+	inet_ntop(p->ai_family, get_in_addr((struct sockaddr *) p->ai_addr), s,
+			sizeof s);
+	printf("client: connecting to %s\n", s);
+
+	freeaddrinfo(servinfo); // all done with this structure
+
+	FD_SET(bootfd, &master);
+	FD_SET(bootfd, &master_readable);
+
+	if (bootfd > fdmax) { // keep track of the max
+		fdmax = bootfd;
+	}
+
+	//Send the join request to bootstrap server
+	struct P2P_h join_h = build_header(0x01, 0x03, PORT_DEFAULT, 0, SELF_IP, msg_id);
+	if (send(bootfd, join_h, HLEN, 0) == -1)
+		perror("send");
+
+	// main loop
     for(;;) {
         read_fds = master_readable; // copy it
         write_fds = master_writable
@@ -192,6 +205,10 @@ int main(void)
                         if (nbytes == 0) {
                             // connection closed
                             printf("selectserver: socket %d hung up\n", i);
+                            if (i == bootfd) {
+                            	printf("Bootstrap server refused connection, shutting down");
+                            	exit(0);
+                            }
 						} else {
 							perror("recv");
 						}
@@ -249,8 +266,12 @@ int main(void)
 								char join_msg_buf[JOINLEN];
 								nbytes = recv(i, join_msg_buf, sizeof join_msg_buf, 0);
 								struct P2P_join* j = (struct P2P_join*)join_msg_buf;
-								if (j->status == JOIN_ACC)
+								if (j->status == JOIN_ACC) {
 									FD_SET(i, &master_writable); //We were accepted, add the socket to writable sockets
+									if (i == bootfd) {
+										printf("Established connection with the bootstrap server");
+									}
+								}
 							}
 							break;
 						}
