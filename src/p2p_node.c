@@ -12,6 +12,11 @@
 #include <stdlib.h>
 #include "p2p_node.h"
 
+#define BS_PORT "12100"
+#define BS_IP "130.233.43.104"
+#define SELF_PORT "8601"
+#define ORG_PORT 0x8601
+
 struct P2P_h build_header(uint8_t ttl, uint8_t msg_type, uint16_t org_port, uint16_t length, uint32_t org_ip, uint32_t msg_id) {
 	struct P2P_h *header;
 	header->version = P_VERSION;
@@ -22,16 +27,23 @@ struct P2P_h build_header(uint8_t ttl, uint8_t msg_type, uint16_t org_port, uint
 	header->length = htons(length);
 	header->org_ip = htons(org_ip);
 	header->msg_id = htons(msg_id);
-	return &header;
+	return *header;
 }
 
 char* build_join_accept_message(uint8_t ttl, uint8_t msg_type, uint16_t org_port, uint16_t length, uint32_t org_ip, uint32_t msg_id) {
 	struct P2P_h h = build_header(ttl, msg_type, org_port, length, org_ip, msg_id);
-	struct P2P_join *j;
-	j->status = JOIN_ACC;
-	char *msg;
-	strcat(msg, (char *)h);
-	strcat(msg, (char *)&j);
+	struct P2P_join j;
+	j.status = JOIN_ACC;
+
+	unsigned char h_buffer[sizeof(h)];
+	memcpy(&h_buffer, &h, sizeof(h));
+
+	unsigned char join_buffer[sizeof(j)];
+	memcpy(&join_buffer, &j, sizeof(j));
+
+	unsigned char msg[sizeof(join_buffer) + sizeof(h_buffer)];
+	strcat(msg, h_buffer);
+	strcat(msg, join_buffer);
 	return msg;
 }
 
@@ -73,7 +85,7 @@ int main(void)
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_flags = AI_PASSIVE;
-    if ((rv = getaddrinfo(NULL, PORT_DEFAULT, &hints, &ai)) != 0) {
+    if ((rv = getaddrinfo(NULL, SELF_PORT, &hints, &ai)) != 0) {
         fprintf(stderr, "selectserver: %s\n", gai_strerror(rv));
         exit(1);
     }
@@ -95,11 +107,13 @@ int main(void)
         break;
     }
 
+
     // if we got here, it means we didn't get bound
     if (p == NULL) {
         fprintf(stderr, "selectserver: failed to bind\n");
         exit(2);
     }
+    struct sockaddr_in *self_addr = p->ai_addr;
 
     freeaddrinfo(ai); // all done with this
 
@@ -125,8 +139,9 @@ int main(void)
 	hints.ai_family = AF_UNSPEC;
 	hints.ai_socktype = SOCK_STREAM;
 
-	if ((rv = getaddrinfo(IP_OF_BOOTSTRAP, PORT_DEFAULT, &hints, &servinfo)) != 0) {
+	if ((rv = getaddrinfo(BS_IP, BS_PORT, &hints, &servinfo)) != 0) {
 		fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(rv));
+		printf("Daaamn");
 		return 1;
 	}
 
@@ -152,10 +167,6 @@ int main(void)
 		return 2;
 	}
 
-	inet_ntop(p->ai_family, get_in_addr((struct sockaddr *) p->ai_addr), s,
-			sizeof s);
-	printf("client: connecting to %s\n", s);
-
 	freeaddrinfo(servinfo); // all done with this structure
 
 	FD_SET(bootfd, &master);
@@ -166,14 +177,16 @@ int main(void)
 	}
 
 	//Send the join request to bootstrap server
-	struct P2P_h join_h = build_header(0x01, 0x03, PORT_DEFAULT, 0, SELF_IP, msg_id);
-	if (send(bootfd, join_h, HLEN, 0) == -1)
+	struct P2P_h join_h = build_header(0x01, 0x03, ORG_PORT, 0, self_addr->sin_addr.s_addr, msg_id);
+	unsigned char join_buffer[sizeof(join_h)];
+	memcpy(&join_buffer, &join_h, sizeof(join_h));
+	if (send(bootfd, join_buffer, sizeof(join_buffer), 0) == -1)
 		perror("send");
 
 	// main loop
     for(;;) {
         read_fds = master_readable; // copy it
-        write_fds = master_writable
+        write_fds = master_writable;
         if (select(fdmax+1, &read_fds, NULL, NULL, NULL) == -1) {
             perror("select");
             exit(4);
@@ -227,8 +240,10 @@ int main(void)
 							if (h->ttl == PING_TTL_HB) {
 								//Answer with Pong A message
 								struct P2P_h h = build_header(1, MSG_PONG,
-										PORT_DEFAULT, 0, NODE_IP, msg_id);
-								if (send(i, h, HLEN, 0) == -1)
+										ORG_PORT, 0, self_addr->sin_addr.s_addr, msg_id);
+								unsigned char h_buffer[sizeof(h)];
+								memcpy(&h_buffer, &h, sizeof(h));
+								if (send(i, h_buffer, sizeof(h_buffer), 0) == -1)
 									perror("send");
 								printf("Sent Pong A");
 							} else {
@@ -254,8 +269,8 @@ int main(void)
 								//Join request, send reply
 								//Also add socket to writable sockets
 								char *msg = build_join_accept_message(1,
-										MSG_JOIN, PORT_DEFAULT, JOINLEN,
-										NODE_IP, msg_id);
+										MSG_JOIN, ORG_PORT, JOINLEN,
+										self_addr->sin_addr.s_addr, msg_id);
 								if (send(i, msg, HLEN + JOINLEN, 0)
 										== -1)
 									perror("send");
