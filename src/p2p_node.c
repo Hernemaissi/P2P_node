@@ -17,17 +17,20 @@
 #define SELF_PORT "8601"
 #define ORG_PORT 0x8601
 
+#define PORT "12100" // the port client will be connecting to
+
+
 struct P2P_h build_header(uint8_t ttl, uint8_t msg_type, uint16_t org_port, uint16_t length, uint32_t org_ip, uint32_t msg_id) {
-	struct P2P_h *header;
-	header->version = P_VERSION;
-	header->ttl = ttl;
-	header->msg_type = msg_type;
-	header->reserved = 0;
-	header->org_port = htons(org_port);
-	header->length = htons(length);
-	header->org_ip = htons(org_ip);
-	header->msg_id = htons(msg_id);
-	return *header;
+	struct P2P_h header;
+	header.version = P_VERSION;
+	header.ttl = ttl;
+	header.msg_type = msg_type;
+	header.reserved = 0;
+	header.org_port = htons(org_port);
+	header.length = htons(length);
+	header.org_ip = htons(org_ip);
+	header.msg_id = htons(msg_id);
+	return header;
 }
 
 char* build_join_accept_message(uint8_t ttl, uint8_t msg_type, uint16_t org_port, uint16_t length, uint32_t org_ip, uint32_t msg_id) {
@@ -183,6 +186,8 @@ int main(void)
 	if (send(bootfd, join_buffer, sizeof(join_buffer), 0) == -1)
 		perror("send");
 
+	printf("Sent following data to bootstrap:\n");
+	printf(join_buffer);
 	// main loop
     for(;;) {
         read_fds = master_readable; // copy it
@@ -280,11 +285,14 @@ int main(void)
 								//If accept, add socket to writable sockets
 								char join_msg_buf[JOINLEN];
 								nbytes = recv(i, join_msg_buf, sizeof join_msg_buf, 0);
-								struct P2P_join* j = (struct P2P_join*)join_msg_buf;
-								if (j->status == JOIN_ACC) {
+								struct P2P_join* j;
+								j = (struct P2P_join* )join_msg_buf;
+								if (j->status == JOIN_ACC || j->status == 2) {
 									FD_SET(i, &master_writable); //We were accepted, add the socket to writable sockets
 									if (i == bootfd) {
 										printf("Established connection with the bootstrap server");
+										printf("Exiting...");
+										exit(0);
 									}
 								}
 							}
@@ -298,3 +306,71 @@ int main(void)
 
     return 0;
 }
+
+
+// get sockaddr, IPv4 or IPv6:
+void *get_in_addr(struct sockaddr *sa)
+{
+    if (sa->sa_family == AF_INET) {
+        return &(((struct sockaddr_in*)sa)->sin_addr);
+    }
+
+    return &(((struct sockaddr_in6*)sa)->sin6_addr);
+}
+/*
+int main()
+{
+    int sockfd, numbytes;
+    char buf[HLEN];
+    struct addrinfo hints, *servinfo, *p;
+    int rv;
+    char s[INET6_ADDRSTRLEN];
+
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+
+    if ((rv = getaddrinfo("130.233.43.104", PORT, &hints, &servinfo)) != 0) {
+        fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(rv));
+        return 1;
+    }
+
+    // loop through all the results and connect to the first we can
+    for(p = servinfo; p != NULL; p = p->ai_next) {
+        if ((sockfd = socket(p->ai_family, p->ai_socktype,
+                p->ai_protocol)) == -1) {
+            perror("client: socket");
+            continue;
+        }
+
+        if (connect(sockfd, p->ai_addr, p->ai_addrlen) == -1) {
+            close(sockfd);
+            perror("client: connect");
+            continue;
+        }
+
+        break;
+    }
+
+    if (p == NULL) {
+        fprintf(stderr, "client: failed to connect\n");
+        return 2;
+    }
+
+    inet_ntop(p->ai_family, get_in_addr((struct sockaddr *)p->ai_addr),
+            s, sizeof s);
+    printf("client: connecting to %s\n", s);
+
+    freeaddrinfo(servinfo); // all done with this structure
+
+    if ((numbytes = recv(sockfd, buf, HLEN, 0)) == -1) {
+        perror("recv");
+        exit(1);
+    }
+
+    printf("client: received '%s'\n",buf);
+
+    close(sockfd);
+
+    return 0;
+}*/
