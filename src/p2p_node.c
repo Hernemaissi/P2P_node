@@ -285,18 +285,31 @@ int main(void)
 								//If accept, add socket to writable sockets
 								char join_msg_buf[JOINLEN];
 								nbytes = recv(i, join_msg_buf, sizeof join_msg_buf, 0);
-								struct P2P_join* j;
-								j = (struct P2P_join* )join_msg_buf;
-								if (j->status == JOIN_ACC || j->status == 2) {
+								struct P2P_join j;
+								memcpy(&j, &join_msg_buf, sizeof(join_msg_buf));
+								if (j.status == JOIN_ACC || j.status == 2) {
 									FD_SET(i, &master_writable); //We were accepted, add the socket to writable sockets
 									if (i == bootfd) {
-										printf("Established connection with the bootstrap server");
-										printf("Exiting...");
-										exit(0);
+										printf("Established connection with the bootstrap server\n");
+										//Test ping message
+										struct P2P_h ping_h = build_header(0x01,
+												MSG_PING, ORG_PORT, 0,
+												self_addr->sin_addr.s_addr,
+												msg_id);
+										unsigned char ping_buffer[sizeof(ping_h)];
+										memcpy(&ping_buffer, &ping_h,
+												sizeof(ping_h));
+										if (send(bootfd, ping_buffer,
+												sizeof(ping_buffer), 0) == -1)
+											perror("send");
 									}
 								}
 							}
 							break;
+						case MSG_PONG:
+							printf("Received pong message.\n");
+							printf("Exiting...\n");
+							exit(0);
 						}
 					}
                 } // END handle data from client
