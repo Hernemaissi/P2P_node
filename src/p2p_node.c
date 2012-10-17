@@ -19,6 +19,16 @@
 
 #define PORT "12100" // the port client will be connecting to
 
+// get sockaddr, IPv4 or IPv6:
+void *get_in_addr(struct sockaddr *sa)
+{
+    if (sa->sa_family == AF_INET) {
+        return &(((struct sockaddr_in*)sa)->sin_addr);
+    }
+
+    return &(((struct sockaddr_in6*)sa)->sin6_addr);
+}
+
 
 struct P2P_h build_header(uint8_t ttl, uint8_t msg_type, uint16_t org_port, uint16_t length, uint32_t org_ip, uint32_t msg_id) {
 	struct P2P_h header;
@@ -70,7 +80,7 @@ int main(void)
     char h_buf[HLEN];    // buffer for header data
     int nbytes;
 
-    char remoteIP[INET6_ADDRSTRLEN];
+    char s[INET6_ADDRSTRLEN];
 
     int yes=1;        // for setsockopt() SO_REUSEADDR, below
     int i, j, rv;
@@ -116,7 +126,9 @@ int main(void)
         fprintf(stderr, "selectserver: failed to bind\n");
         exit(2);
     }
-    struct sockaddr_in *self_addr = p->ai_addr;
+    struct sockaddr_in *self_addr = (struct sockaddr_in*)p->ai_addr;
+    char *some_addr;
+    some_addr = inet_ntoa(self_addr->sin_addr);
 
     freeaddrinfo(ai); // all done with this
 
@@ -136,7 +148,6 @@ int main(void)
 
     int bootfd;
 	struct addrinfo *servinfo;
-	char s[INET6_ADDRSTRLEN];
 
 	memset(&hints, 0, sizeof hints);
 	hints.ai_family = AF_UNSPEC;
@@ -186,8 +197,6 @@ int main(void)
 	if (send(bootfd, join_buffer, sizeof(join_buffer), 0) == -1)
 		perror("send");
 
-	printf("Sent following data to bootstrap:\n");
-	printf(join_buffer);
 	// main loop
     for(;;) {
         read_fds = master_readable; // copy it
@@ -224,7 +233,8 @@ int main(void)
                             // connection closed
                             printf("selectserver: socket %d hung up\n", i);
                             if (i == bootfd) {
-                            	printf("Bootstrap server refused connection, shutting down");
+                            	close(bootfd);
+                            	printf("Bootstrap server refused connection, shutting down\n");
                             	exit(0);
                             }
 						} else {
@@ -235,11 +245,20 @@ int main(void)
 						// remove from master set
 					} else {
 						// we got some data from a client
-						struct P2P_h* h = (struct P2P_h *) h_buf;
+						//struct P2P_h* h; = (struct P2P_h *) h_buf;
+						struct P2P_h head;
+						memcpy(&head, &h_buf, sizeof(h_buf));
+						struct P2P_h* h = &head;
 						if (h->version != P_VERSION || h->ttl <= 0) {
 							continue;
 						}
 						uint8_t type = h->msg_type;
+						/* Address capture
+						struct sockaddr_in antelope;
+						uint32_t o_ip = ntohs(h->org_ip);
+						memcpy(&antelope.sin_addr.s_addr, &o_ip, sizeof(uint32_t));
+						char *some_addr;
+						some_addr = inet_ntoa(antelope.sin_addr);*/
 						switch (type) {
 						case MSG_PING:
 							if (h->ttl == PING_TTL_HB) {
@@ -307,9 +326,42 @@ int main(void)
 							}
 							break;
 						case MSG_PONG:
-							printf("Received pong message.\n");
-							printf("Exiting...\n");
-							exit(0);
+							if (h->length == 0) {
+								printf("Received Pong A message\n");
+								//Test ping B message
+								struct P2P_h ping_h = build_header(0x02,
+										MSG_PING, ORG_PORT, 0,
+										self_addr->sin_addr.s_addr, msg_id);
+								unsigned char ping_buffer[sizeof(ping_h)];
+								memcpy(&ping_buffer, &ping_h, sizeof(ping_h));
+								if (send(bootfd, ping_buffer,
+										sizeof(ping_buffer), 0) == -1)
+									perror("send");
+							} else {
+								printf("Received Pong B message\n");
+								if (h->length != 0) {
+									printf("Parsing peer data");
+									uint16_t payload = ntohs(h->length);
+									unsigned char pong_front_buffer[PONG_MINLEN];
+									nbytes = recv(i, pong_front_buffer, sizeof PONG_MINLEN, 0);
+									struct P2P_pong_front front;
+									memcpy(&front, &pong_front_buffer, sizeof(pong_front_buffer));
+									uint16_t entries = front.entry_size;
+									uint16_t z = 0;
+									for (z = 0; z < entries; z++) {
+										unsigned char pong_entry_buffer[PONG_ENTRYLEN];
+										nbytes = recv(i, pong_entry_buffer, sizeof PONG_ENTRYLEN, 0);
+										struct P2P_pong_entry entry;
+										memcpy(&entry, &pong_entry_buffer, sizeof(pong_entry_buffer));
+										char *some_addr;
+										some_addr = inet_ntoa(entry.ip);
+										printf("Ip-Address: %s\n", some_addr);
+									}
+									close(bootfd);
+									exit(0);
+								}
+							}
+							break;
 						}
 					}
                 } // END handle data from client
@@ -320,70 +372,3 @@ int main(void)
     return 0;
 }
 
-
-// get sockaddr, IPv4 or IPv6:
-void *get_in_addr(struct sockaddr *sa)
-{
-    if (sa->sa_family == AF_INET) {
-        return &(((struct sockaddr_in*)sa)->sin_addr);
-    }
-
-    return &(((struct sockaddr_in6*)sa)->sin6_addr);
-}
-/*
-int main()
-{
-    int sockfd, numbytes;
-    char buf[HLEN];
-    struct addrinfo hints, *servinfo, *p;
-    int rv;
-    char s[INET6_ADDRSTRLEN];
-
-    memset(&hints, 0, sizeof hints);
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-
-    if ((rv = getaddrinfo("130.233.43.104", PORT, &hints, &servinfo)) != 0) {
-        fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(rv));
-        return 1;
-    }
-
-    // loop through all the results and connect to the first we can
-    for(p = servinfo; p != NULL; p = p->ai_next) {
-        if ((sockfd = socket(p->ai_family, p->ai_socktype,
-                p->ai_protocol)) == -1) {
-            perror("client: socket");
-            continue;
-        }
-
-        if (connect(sockfd, p->ai_addr, p->ai_addrlen) == -1) {
-            close(sockfd);
-            perror("client: connect");
-            continue;
-        }
-
-        break;
-    }
-
-    if (p == NULL) {
-        fprintf(stderr, "client: failed to connect\n");
-        return 2;
-    }
-
-    inet_ntop(p->ai_family, get_in_addr((struct sockaddr *)p->ai_addr),
-            s, sizeof s);
-    printf("client: connecting to %s\n", s);
-
-    freeaddrinfo(servinfo); // all done with this structure
-
-    if ((numbytes = recv(sockfd, buf, HLEN, 0)) == -1) {
-        perror("recv");
-        exit(1);
-    }
-
-    printf("client: received '%s'\n",buf);
-
-    close(sockfd);
-
-    return 0;
-}*/
