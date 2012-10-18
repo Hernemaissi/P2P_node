@@ -234,7 +234,7 @@ int main(void)
                             printf("selectserver: socket %d hung up\n", i);
                             if (i == bootfd) {
                             	close(bootfd);
-                            	printf("Bootstrap server refused connection, shutting down\n");
+                            	printf("Bootstrap server refused connection, Exiting...\n");
                             	exit(0);
                             }
 						} else {
