@@ -197,6 +197,17 @@ int main(void)
 	if (send(bootfd, join_buffer, sizeof(join_buffer), 0) == -1)
 		perror("send");
 
+    //try to send a query
+    unsigned char testkey[] = "testkey";
+    struct P2P_h query_h = build_header(0x01, 0x80, ORG_PORT, strlen(testkey), self_addr->sin_addr.s_addr, msg_id);
+    unsigned char query_buffer[sizeof(query_h)+strlen(testkey)];
+    memcpy(&query_buffer, &query_h, sizeof(query_h));
+    memcpy(&query_buffer + sizeof(query_h), testkey, strlen(testkey));
+    //strcat(query_buffer, testkey);
+    if (send(bootfd, query_buffer, sizeof(query_buffer), 0) == -1)
+        perror("send");
+
+
 	// main loop
     for(;;) {
         read_fds = master_readable; // copy it
