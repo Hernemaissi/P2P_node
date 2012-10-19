@@ -79,4 +79,23 @@ struct P2P_pong_entry {
     uint16_t       sbz;
 };
 
+struct P2P_qhit_front {
+	uint16_t    entry_size;
+	uint16_t    sbz;
+};
+
+struct P2P_qhit_entry {
+	uint16_t    resource_id;
+	uint16_t    sbz;
+	uint32_t	resource_value;
+};
+
+struct P2P_resource_data {
+	uint16_t    resource_id;
+	uint32_t	resource_value;
+	struct P2P_resource_data* next;
+};
+
+
+
 #endif

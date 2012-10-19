@@ -38,7 +38,7 @@ struct P2P_h build_header(uint8_t ttl, uint8_t msg_type, uint16_t org_port, uint
 	header.reserved = 0;
 	header.org_port = htons(org_port);
 	header.length = htons(length);
-	header.org_ip = htons(org_ip);
+	header.org_ip = htonl(org_ip);
 	header.msg_id = htons(msg_id);
 	return header;
 }
@@ -193,18 +193,28 @@ int main(void)
 	//Send the join request to bootstrap server
 	struct P2P_h join_h = build_header(0x01, 0x03, ORG_PORT, 0, self_addr->sin_addr.s_addr, msg_id);
 	unsigned char join_buffer[sizeof(join_h)];
-	memcpy(&join_buffer, &join_h, sizeof(join_h));
+	memcpy(join_buffer, &join_h, sizeof(join_h));
 	if (send(bootfd, join_buffer, sizeof(join_buffer), 0) == -1)
 		perror("send");
 
-    //try to send a query
-    unsigned char testkey[] = "testkey";
-    struct P2P_h query_h = build_header(0x01, 0x80, ORG_PORT, strlen(testkey), self_addr->sin_addr.s_addr, msg_id);
-    unsigned char query_buffer[sizeof(query_h)+strlen(testkey)];
-    memcpy(query_buffer, &query_h, sizeof(query_h));
-    memcpy(query_buffer + sizeof(query_h), testkey, strlen(testkey));
-    if (send(bootfd, query_buffer, sizeof(query_buffer), 0) == -1)
-        perror("send");
+	//try to send a query
+	unsigned char testkey[] = "testkey";
+	struct P2P_h query_h = build_header(0x01, 0x80, ORG_PORT, strlen(testkey),
+			self_addr->sin_addr.s_addr, msg_id);
+	uint16_t pl = ntohs(query_h.length);
+	unsigned char query_buffer[sizeof(query_h) + strlen(testkey)];
+	memcpy(query_buffer, &query_h, sizeof(query_h));
+	memcpy(query_buffer + sizeof(query_h), testkey, strlen(testkey));
+	if (send(bootfd, query_buffer, sizeof(query_buffer), 0) == -1)
+		perror("send");
+
+	//Initialize resource data
+	struct P2P_resource_data data;
+	data.next = NULL;
+	data.resource_id = 0x0350;
+	data.resource_value = 0x03500650;
+	unsigned char publish_key[] = "testkey";
+
 
 
 	// main loop
@@ -263,12 +273,11 @@ int main(void)
 							continue;
 						}
 						uint8_t type = h->msg_type;
-						/* Address capture
 						struct sockaddr_in antelope;
 						uint32_t o_ip = ntohs(h->org_ip);
 						memcpy(&antelope.sin_addr.s_addr, &o_ip, sizeof(uint32_t));
 						char *some_addr;
-						some_addr = inet_ntoa(antelope.sin_addr);*/
+						some_addr = inet_ntoa(antelope.sin_addr);
 						switch (type) {
 						case MSG_PING:
 							if (h->ttl == PING_TTL_HB) {
@@ -286,10 +295,66 @@ int main(void)
 							break;
 						case MSG_QUERY:
 							//If hit, send MSG_QHIT back, send this forward to 5 peers
+							unsigned char received_key[ntohs(h->length)];
+							nbytes = recv(i, received_key, sizeof received_key, 0);
+
+							//Check if the key matches, if match, create and send qhit packet
+							if (strcmp(received_key, publish_key) == 0) {
+								uint16_t hits = 0;
+								printf("Match found, sending QueryHit\n");
+								if (data.resource_id != 0) {
+									struct P2P_resource_data* tmp;
+									for (tmp = &data; tmp != NULL;
+											tmp = tmp->next) {
+										hits++;
+									}
+									int size =
+											sizeof(struct P2P_h)
+													+ sizeof(struct P2P_qhit_front)
+													+ (hits
+															* sizeof(struct P2P_qhit_entry));
+									unsigned char qhit_buffer[size];
+									int array_size = sizeof(qhit_buffer)
+											/ sizeof(unsigned char);
+									struct P2P_h qh_h =
+											build_header(0x01, MSG_QHIT,
+													ORG_PORT,
+													sizeof(struct P2P_qhit_front)
+															+ (hits
+																	* sizeof(struct P2P_qhit_entry)),
+													self_addr->sin_addr.s_addr,
+													msg_id);
+									memcpy(qhit_buffer, &qh_h, sizeof(qh_h));
+									struct P2P_qhit_front f;
+									f.entry_size = htons(hits);
+									f.sbz = 0;
+									memcpy(qhit_buffer + sizeof(qh_h), &f,
+											sizeof(f));
+									for (i = 0; i < hits; i++) {
+										tmp = &data;
+										struct P2P_qhit_entry e;
+										e.resource_id = htons(tmp->resource_id);
+										e.resource_value = htonl(
+												tmp->resource_value);
+										e.sbz = 0;
+										memcpy(
+												qhit_buffer + sizeof(qh_h)
+														+ sizeof(f)
+														+ (i * sizeof(e)), &e,
+												sizeof(e));
+										tmp = tmp->next;
+									}
+									if (send(bootfd, qhit_buffer,
+											sizeof(qhit_buffer), 0) == -1)
+										perror("send");
+								}
+
+							}
+
+
 							break;
 						case MSG_QHIT:
-							//If hit for a message we sent, print value or something
-							//Otherwise, consult the table to sent it back reverse path
+							printf("Query hit!");
 							break;
 						case MSG_BYE:
 							//Kill tcp connection
@@ -356,7 +421,8 @@ int main(void)
 									nbytes = recv(i, pong_front_buffer, sizeof PONG_MINLEN, 0);
 									struct P2P_pong_front front;
 									memcpy(&front, &pong_front_buffer, sizeof(pong_front_buffer));
-									uint16_t entries = front.entry_size;
+									uint16_t entries = ntohs(front.entry_size);
+									printf("Entry size is: %u\n", entries);
 									uint16_t z = 0;
 									for (z = 0; z < entries; z++) {
 										unsigned char pong_entry_buffer[PONG_ENTRYLEN];
@@ -368,8 +434,9 @@ int main(void)
 										printf("Ip-Address: %s\n", some_addr);
 									}
 									close(bootfd);
-									exit(0);
+									exit(2);
 								}
+
 							}
 							break;
 						}
