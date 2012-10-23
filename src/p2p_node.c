@@ -17,6 +17,8 @@
 #define SELF_PORT "8601"
 #define ORG_PORT 0x8601
 
+#define STDIN 0  // file descriptor for standard input
+
 #define PORT "12100" // the port client will be connecting to
 
 // get sockaddr, IPv4 or IPv6:
@@ -79,6 +81,7 @@ int main(void)
 
     char h_buf[HLEN];    // buffer for header data
     int nbytes;
+    char input[100];
 
     char s[INET6_ADDRSTRLEN];
 
@@ -214,6 +217,16 @@ int main(void)
 	data.resource_id = 0x0350;
 	data.resource_value = 0x03500650;
 	unsigned char publish_key[] = "testkey";
+	FD_SET(STDIN, &master_readable);
+
+
+	struct P2P_peer_data* neighbours = NULL;
+	//Testing
+	/*
+	neighbours->ip = self_addr->sin_addr;
+	neighbours->port = ORG_PORT;*/
+	struct P2P_peer_data* latest_n = neighbours;
+	uint16_t peer_size = 0;
 
 
 
@@ -229,6 +242,11 @@ int main(void)
         // run through the existing connections looking for data to read
         for(i = 0; i <= fdmax; i++) {
             if (FD_ISSET(i, &read_fds)) { // we got one!!
+            	if (i == STDIN) {
+            		printf("A key was pressed\n");
+            		read(STDIN, input, sizeof(input));
+            		continue;
+            	}
                 if (i == listener) {
                     // handle new connections
                     addrlen = sizeof remoteaddr;
@@ -267,7 +285,7 @@ int main(void)
 						// we got some data from a client
 						//struct P2P_h* h; = (struct P2P_h *) h_buf;
 						struct P2P_h head;
-						memcpy(&head, &h_buf, sizeof(h_buf));
+						memcpy(&head, h_buf, sizeof(h_buf));
 						struct P2P_h* h = &head;
 						if (h->version != P_VERSION || h->ttl <= 0) {
 							continue;
@@ -285,15 +303,39 @@ int main(void)
 								struct P2P_h h = build_header(1, MSG_PONG,
 										ORG_PORT, 0, self_addr->sin_addr.s_addr, msg_id);
 								unsigned char h_buffer[sizeof(h)];
-								memcpy(&h_buffer, &h, sizeof(h));
+								memcpy(h_buffer, &h, sizeof(h));
 								if (send(i, h_buffer, sizeof(h_buffer), 0) == -1)
 									perror("send");
 								printf("Sent Pong A");
 							} else {
-								//Answer with Pong B message
+								struct P2P_h h = build_header(1, MSG_PONG,
+										ORG_PORT,
+										PONG_MINLEN + peer_size * PONG_ENTRYLEN,
+										self_addr->sin_addr.s_addr, msg_id);
+								struct P2P_pong_front f;
+								f.entry_size = htons(peer_size);
+								f.sbz = 0;
+								unsigned char pongB_buffer[sizeof(h) + PONG_MINLEN + peer_size*PONG_ENTRYLEN];
+								memcpy(pongB_buffer, &h, sizeof(h));
+								memcpy(pongB_buffer+sizeof(h), &f, sizeof(f));
+								struct P2P_peer_data* tmp = neighbours;
+								int peer_count;
+								for (peer_count = 0; peer_count < peer_size; peer_count++) {
+									struct P2P_pong_entry e;
+									e.ip = tmp->ip;
+									e.port = htons(tmp->port);
+									e.sbz = 0;
+									memcpy(pongB_buffer+sizeof(h)+peer_count*sizeof(e), &e, sizeof(e));
+									tmp = tmp->next;
+								}
+								if (send(i, pongB_buffer,
+										sizeof(pongB_buffer), 0) == -1)
+									perror("send");
+
 							}
 							break;
 						case MSG_QUERY:
+						{
 							//If hit, send MSG_QHIT back, send this forward to 5 peers
 							unsigned char received_key[ntohs(h->length)];
 							nbytes = recv(i, received_key, sizeof received_key, 0);
@@ -330,7 +372,8 @@ int main(void)
 									f.sbz = 0;
 									memcpy(qhit_buffer + sizeof(qh_h), &f,
 											sizeof(f));
-									for (i = 0; i < hits; i++) {
+									uint16_t z = 0;
+									for (z = 0; z < hits; z++) {
 										tmp = &data;
 										struct P2P_qhit_entry e;
 										e.resource_id = htons(tmp->resource_id);
@@ -344,14 +387,14 @@ int main(void)
 												sizeof(e));
 										tmp = tmp->next;
 									}
-									if (send(bootfd, qhit_buffer,
+									if (send(i, qhit_buffer,
 											sizeof(qhit_buffer), 0) == -1)
 										perror("send");
 								}
 
 							}
 
-
+						}
 							break;
 						case MSG_QHIT:
 							printf("Query hit!");
@@ -380,7 +423,7 @@ int main(void)
 								char join_msg_buf[JOINLEN];
 								nbytes = recv(i, join_msg_buf, sizeof join_msg_buf, 0);
 								struct P2P_join j;
-								memcpy(&j, &join_msg_buf, sizeof(join_msg_buf));
+								memcpy(&j, join_msg_buf, sizeof(join_msg_buf));
 								if (j.status == JOIN_ACC || j.status == 2) {
 									FD_SET(i, &master_writable); //We were accepted, add the socket to writable sockets
 									if (i == bootfd) {
@@ -408,7 +451,7 @@ int main(void)
 										MSG_PING, ORG_PORT, 0,
 										self_addr->sin_addr.s_addr, msg_id);
 								unsigned char ping_buffer[sizeof(ping_h)];
-								memcpy(&ping_buffer, &ping_h, sizeof(ping_h));
+								memcpy(ping_buffer, &ping_h, sizeof(ping_h));
 								if (send(bootfd, ping_buffer,
 										sizeof(ping_buffer), 0) == -1)
 									perror("send");
@@ -420,7 +463,7 @@ int main(void)
 									unsigned char pong_front_buffer[PONG_MINLEN];
 									nbytes = recv(i, pong_front_buffer, sizeof PONG_MINLEN, 0);
 									struct P2P_pong_front front;
-									memcpy(&front, &pong_front_buffer, sizeof(pong_front_buffer));
+									memcpy(&front, pong_front_buffer, sizeof(pong_front_buffer));
 									uint16_t entries = ntohs(front.entry_size);
 									printf("Entry size is: %u\n", entries);
 									uint16_t z = 0;
@@ -428,13 +471,12 @@ int main(void)
 										unsigned char pong_entry_buffer[PONG_ENTRYLEN];
 										nbytes = recv(i, pong_entry_buffer, sizeof PONG_ENTRYLEN, 0);
 										struct P2P_pong_entry entry;
-										memcpy(&entry, &pong_entry_buffer, sizeof(pong_entry_buffer));
+										memcpy(&entry, pong_entry_buffer, sizeof(pong_entry_buffer));
 										char *some_addr;
 										some_addr = inet_ntoa(entry.ip);
 										printf("Ip-Address: %s\n", some_addr);
 									}
-									close(bootfd);
-									exit(2);
+
 								}
 
 							}

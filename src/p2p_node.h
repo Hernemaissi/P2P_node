@@ -96,6 +96,12 @@ struct P2P_resource_data {
 	struct P2P_resource_data* next;
 };
 
+struct P2P_peer_data {
+    struct in_addr ip;
+    uint16_t       port;
+    struct P2P_peer_data*      next;
+};
+
 
 
 #endif
