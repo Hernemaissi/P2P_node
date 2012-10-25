@@ -416,7 +416,23 @@ int main(void)
 								r_head->next = tmp;
 								r_head = tmp;
 							}
-
+							//Forward to up to 5 peers, drop ttl by one
+							unsigned char whole_query[HLEN + strlen(received_key)];
+							memcpy(whole_query, h, HLEN);
+							memcpy(whole_query + HLEN, received_key, strlen(received_key));
+							int peers = 0;
+							int fds;
+							for (fds = 0; fds < fdmax; fds++) {
+								//Don't send to self, or listener
+								if (fds != listener && fds != i) {
+									if (send(fds, whole_query, sizeof(whole_query), 0) == -1)
+																			perror("send");
+									peers++;
+									if (peers == 5) {
+										break;
+									}
+								}
+							}
 						}
 							break;
 						case MSG_QHIT:
