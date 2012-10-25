@@ -62,6 +62,13 @@ char* build_join_accept_message(uint8_t ttl, uint8_t msg_type, uint16_t org_port
 	return msg;
 }
 
+//a simple random number generator for message ID
+uint32_t get_msg_id()
+{
+    srand(time(NULL));
+    return rand() % 0xFFFF;
+}
+
 int main(void)
 {
 	//TODO: Connection to bootstrap server
@@ -203,7 +210,7 @@ int main(void)
 	//try to send a query
 	unsigned char testkey[] = "testkey";
 	struct P2P_h query_h = build_header(0x01, 0x80, ORG_PORT, strlen(testkey),
-			self_addr->sin_addr.s_addr, msg_id);
+			self_addr->sin_addr.s_addr, get_msg_id());
 	uint16_t pl = ntohs(query_h.length);
 	unsigned char query_buffer[sizeof(query_h) + strlen(testkey)];
 	memcpy(query_buffer, &query_h, sizeof(query_h));
