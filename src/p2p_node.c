@@ -220,14 +220,17 @@ int main(void)
 	FD_SET(STDIN, &master_readable);
 
 
-	struct P2P_peer_data* neighbours = NULL;
-	//Testing
-	/*
-	neighbours->ip = self_addr->sin_addr;
-	neighbours->port = ORG_PORT;*/
-	struct P2P_peer_data* latest_n = neighbours;
-	uint16_t peer_size = 0;
+	//Initialize peer_list data, with 1 test peer
+	struct P2P_peer_data* neighbours = malloc( sizeof(struct P2P_peer_data) );
 
+	neighbours->ip = self_addr->sin_addr;
+	neighbours->port = ORG_PORT;
+	struct P2P_peer_data* peer_list_head = neighbours;
+	uint16_t peer_size = 1;
+
+	//Initialize reverse path list
+	struct P2P_reverse_path_entry* reverse_path = NULL;
+	struct P2P_reverse_path_entry* r_head = NULL;
 
 
 	// main loop
@@ -300,24 +303,21 @@ int main(void)
 						case MSG_PING:
 							if (h->ttl == PING_TTL_HB) {
 								//Answer with Pong A message
-								struct P2P_h h = build_header(1, MSG_PONG,
-										ORG_PORT, 0, self_addr->sin_addr.s_addr, msg_id);
-								unsigned char h_buffer[sizeof(h)];
-								memcpy(h_buffer, &h, sizeof(h));
+								h->msg_type = MSG_PONG;
+								unsigned char h_buffer[HLEN];
+								memcpy(h_buffer, h, HLEN);
 								if (send(i, h_buffer, sizeof(h_buffer), 0) == -1)
 									perror("send");
 								printf("Sent Pong A");
 							} else {
-								struct P2P_h h = build_header(1, MSG_PONG,
-										ORG_PORT,
-										PONG_MINLEN + peer_size * PONG_ENTRYLEN,
-										self_addr->sin_addr.s_addr, msg_id);
+								h->msg_type = MSG_PONG;
+								h->length = htons(PONG_MINLEN + peer_size * PONG_ENTRYLEN);
 								struct P2P_pong_front f;
 								f.entry_size = htons(peer_size);
 								f.sbz = 0;
-								unsigned char pongB_buffer[sizeof(h) + PONG_MINLEN + peer_size*PONG_ENTRYLEN];
-								memcpy(pongB_buffer, &h, sizeof(h));
-								memcpy(pongB_buffer+sizeof(h), &f, sizeof(f));
+								unsigned char pongB_buffer[HLEN + PONG_MINLEN + peer_size*PONG_ENTRYLEN];
+								memcpy(pongB_buffer, h, HLEN);
+								memcpy(pongB_buffer+HLEN, &f, sizeof(f));
 								struct P2P_peer_data* tmp = neighbours;
 								int peer_count;
 								for (peer_count = 0; peer_count < peer_size; peer_count++) {
@@ -325,7 +325,7 @@ int main(void)
 									e.ip = tmp->ip;
 									e.port = htons(tmp->port);
 									e.sbz = 0;
-									memcpy(pongB_buffer+sizeof(h)+peer_count*sizeof(e), &e, sizeof(e));
+									memcpy(pongB_buffer+HLEN+sizeof(f)+peer_count*sizeof(e), &e, sizeof(e));
 									tmp = tmp->next;
 								}
 								if (send(i, pongB_buffer,
@@ -393,11 +393,50 @@ int main(void)
 								}
 
 							}
+							//Store the reverse path
+							if (reverse_path == NULL) {
+								reverse_path = malloc(sizeof(struct P2P_reverse_path_entry));
+								reverse_path->destination_socket = i;
+								reverse_path->msg_id = ntohl(h->msg_id);
+								reverse_path->next = NULL;
+								r_head = reverse_path;
+							} else {
+								struct P2P_reverse_path_entry* tmp = malloc(sizeof(struct P2P_reverse_path_entry));
+								reverse_path->destination_socket = i;
+								reverse_path->msg_id = ntohl(h->msg_id);
+								reverse_path->next = NULL;
+								r_head->next = tmp;
+								r_head = tmp;
+							}
 
 						}
 							break;
 						case MSG_QHIT:
-							printf("Query hit!");
+						{
+							//TODO: Check if hit to our own query
+							//Find reverse path, drop if it doesn't exist
+							unsigned char qhit_front_buf[sizeof(struct P2P_qhit_front)];
+							nbytes = recv(i, qhit_front_buf, sizeof qhit_front_buf, 0);
+							struct P2P_qhit_front f;
+							memcpy(&f, qhit_front_buf, sizeof(qhit_front_buf));
+							uint16_t e = ntohs(f.entry_size);
+							unsigned char whole_qhit[HLEN + sizeof(qhit_front_buf) + e*sizeof(struct P2P_qhit_entry)];
+							memcpy(whole_qhit, h, HLEN);
+							memcpy(whole_qhit + HLEN, &f, sizeof(f));
+							for (e = 0; e < ntohs(f.entry_size); e++) {
+								unsigned char entry_buf[sizeof(struct P2P_qhit_entry)];
+								nbytes = recv(i, entry_buf, sizeof(entry_buf), 0);
+								memcpy(whole_qhit + HLEN + sizeof(f) + e*sizeof(entry_buf), entry_buf, sizeof(entry_buf));
+							}
+							struct P2P_reverse_path_entry* tmp = reverse_path;
+							for (; tmp != NULL; tmp = tmp->next) {
+								if (tmp->msg_id == ntohl(h->msg_id)) {
+									//Found the reverse path
+									if (send(i, whole_qhit, sizeof(whole_qhit), 0) == -1)
+										perror("send");
+								}
+							}
+						}
 							break;
 						case MSG_BYE:
 							//Kill tcp connection

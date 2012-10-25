@@ -102,6 +102,12 @@ struct P2P_peer_data {
     struct P2P_peer_data*      next;
 };
 
+struct P2P_reverse_path_entry {
+	int destination_socket;
+	uint32_t    msg_id;
+	struct P2P_reverse_path_entry* next;
+};
+
 
 
 #endif
