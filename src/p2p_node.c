@@ -10,6 +10,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 #include "p2p_node.h"
 
 #define BS_PORT "12100"
