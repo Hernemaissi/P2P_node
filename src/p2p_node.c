@@ -81,6 +81,8 @@ int main(void)
     fd_set read_fds;  // temp file descriptor list for select()
     fd_set write_fds;
     int fdmax;        // maximum file descriptor number
+    time_t send_ping; //Timer for sending ping
+    time_t now;
 
     int listener;     // listening socket descriptor
     int newfd;        // newly accept()ed socket descriptor
@@ -137,6 +139,7 @@ int main(void)
         fprintf(stderr, "selectserver: failed to bind\n");
         exit(2);
     }
+    struct addrinfo* testconnect = p;
     struct sockaddr_in *self_addr = (struct sockaddr_in*)p->ai_addr;
     char *some_addr;
     some_addr = inet_ntoa(self_addr->sin_addr);
@@ -208,16 +211,6 @@ int main(void)
 	if (send(bootfd, join_buffer, sizeof(join_buffer), 0) == -1)
 		perror("send");
 
-	//try to send a query
-	unsigned char testkey[] = "testkey";
-	struct P2P_h query_h = build_header(0x01, 0x80, ORG_PORT, strlen(testkey),
-			self_addr->sin_addr.s_addr, get_msg_id());
-	unsigned char query_buffer[sizeof(query_h) + strlen(testkey)];
-	memcpy(query_buffer, &query_h, sizeof(query_h));
-	memcpy(query_buffer + sizeof(query_h), testkey, strlen(testkey));
-	if (send(bootfd, query_buffer, sizeof(query_buffer), 0) == -1)
-		perror("send");
-
 	//Initialize resource data
 	struct P2P_resource_data data;
 	data.next = NULL;
@@ -228,16 +221,21 @@ int main(void)
 
 
 	//Initialize peer_list data, with 1 test peer
-	struct P2P_peer_data* neighbours = malloc( sizeof(struct P2P_peer_data) );
-
-	neighbours->ip = self_addr->sin_addr;
-	neighbours->port = ORG_PORT;
+	struct P2P_peer_data* neighbours = NULL;
 	struct P2P_peer_data* peer_list_head = neighbours;
-	uint16_t peer_size = 1;
+	uint16_t peer_size = 0;
 
 	//Initialize reverse path list
 	struct P2P_reverse_path_entry* reverse_path = NULL;
 	struct P2P_reverse_path_entry* r_head = NULL;
+
+	//Initialize array for message ID:s
+	uint32_t sent_queries[1024];
+	int sent_queries_index = 0;
+
+	//Initialize times
+	time(&send_ping);
+	time(&now);
 
 
 	// main loop
@@ -302,6 +300,10 @@ int main(void)
 								== -1)
 							perror("send");
 						printf ("Sent query with key %s\n", search_key);
+						if (sent_queries_index < 1024) {
+							sent_queries[sent_queries_index] = ntohl(query_h.msg_id);
+							sent_queries_index++;
+						}
 					} else if (strncmp(input, "bye", strlen("bye")) == 0) {
 						struct P2P_h bye_h = build_header(0x01, MSG_BYE, ORG_PORT,
 								0, self_addr->sin_addr.s_addr, msg_id);
@@ -310,6 +312,16 @@ int main(void)
 						if (send(bootfd, join_buffer, sizeof(join_buffer), 0)
 								== -1)
 							perror("send");
+					} else if (strncmp(input, "qhit", strlen("qhit")) == 0) {
+						int testsock;
+						if ((testsock = socket(testconnect->ai_family, testconnect->ai_socktype, testconnect->ai_protocol))
+									== -1) {
+								perror("client: socket");
+							}
+						if (connect(testsock, testconnect->ai_addr, testconnect->ai_addrlen) == -1) {
+									close(bootfd);
+									perror("client: connect");
+								}
 					} else {
 						printf("Command not recognized. Known commands are: 'pinga', 'pingb', 'query' and 'bye'\n");
 					}
@@ -404,6 +416,7 @@ int main(void)
 							break;
 						case MSG_QUERY:
 						{
+							printf("Received query.\n");
 							//If hit, send MSG_QHIT back, send this forward to 5 peers
 							unsigned char received_key[ntohs(h->length)];
 							nbytes = recv(i, received_key, sizeof received_key, 0);
@@ -502,26 +515,64 @@ int main(void)
 						{
 							printf("Received query hit!\n");
 							//TODO: Check if hit to our own query
-							//Find reverse path, drop if it doesn't exist
-							unsigned char qhit_front_buf[sizeof(struct P2P_qhit_front)];
-							nbytes = recv(i, qhit_front_buf, sizeof qhit_front_buf, 0);
-							struct P2P_qhit_front f;
-							memcpy(&f, qhit_front_buf, sizeof(qhit_front_buf));
-							uint16_t e = ntohs(f.entry_size);
-							unsigned char whole_qhit[HLEN + sizeof(qhit_front_buf) + e*sizeof(struct P2P_qhit_entry)];
-							memcpy(whole_qhit, h, HLEN);
-							memcpy(whole_qhit + HLEN, &f, sizeof(f));
-							for (e = 0; e < ntohs(f.entry_size); e++) {
-								unsigned char entry_buf[sizeof(struct P2P_qhit_entry)];
-								nbytes = recv(i, entry_buf, sizeof(entry_buf), 0);
-								memcpy(whole_qhit + HLEN + sizeof(f) + e*sizeof(entry_buf), entry_buf, sizeof(entry_buf));
+							int own_query = 0;
+							for (j = 0; j<1024; j++) {
+								if (ntohl(h->msg_id) == sent_queries[j]) {
+									own_query = 1;
+								}
 							}
-							struct P2P_reverse_path_entry* tmp = reverse_path;
-							for (; tmp != NULL; tmp = tmp->next) {
-								if (tmp->msg_id == ntohl(h->msg_id)) {
-									//Found the reverse path
-									if (send(i, whole_qhit, sizeof(whole_qhit), 0) == -1)
-										perror("send");
+							if (own_query) {
+								printf("Received result to our own query\n");
+								printf("Finding reverse path.\n");
+								unsigned char qhit_front_buf[sizeof(struct P2P_qhit_front)];
+								nbytes = recv(i, qhit_front_buf,
+										sizeof qhit_front_buf, 0);
+								struct P2P_qhit_front f;
+								memcpy(&f, qhit_front_buf,
+										sizeof(qhit_front_buf));
+								uint16_t e = ntohs(f.entry_size);
+								printf("Received entries: %u\n", e);
+								for (e = 0; e < ntohs(f.entry_size); e++) {
+									unsigned char entry_buf[sizeof(struct P2P_qhit_entry)];
+									struct P2P_qhit_entry ent;
+									nbytes = recv(i, entry_buf,
+											sizeof(entry_buf), 0);
+									memcpy(&ent, entry_buf, sizeof(entry_buf));
+									printf("Resource value %u, %u\n", e+1, ntohl(ent.resource_value));
+								}
+							} else {
+								//Find reverse path, drop if it doesn't exist
+								printf("Finding reverse path.\n");
+								unsigned char qhit_front_buf[sizeof(struct P2P_qhit_front)];
+								nbytes = recv(i, qhit_front_buf,
+										sizeof qhit_front_buf, 0);
+								struct P2P_qhit_front f;
+								memcpy(&f, qhit_front_buf,
+										sizeof(qhit_front_buf));
+								uint16_t e = ntohs(f.entry_size);
+								unsigned char whole_qhit[HLEN
+										+ sizeof(qhit_front_buf)
+										+ e * sizeof(struct P2P_qhit_entry)];
+								memcpy(whole_qhit, h, HLEN);
+								memcpy(whole_qhit + HLEN, &f, sizeof(f));
+								for (e = 0; e < ntohs(f.entry_size); e++) {
+									unsigned char entry_buf[sizeof(struct P2P_qhit_entry)];
+									nbytes = recv(i, entry_buf,
+											sizeof(entry_buf), 0);
+									memcpy(
+											whole_qhit + HLEN + sizeof(f)
+													+ e * sizeof(entry_buf),
+											entry_buf, sizeof(entry_buf));
+								}
+								struct P2P_reverse_path_entry* tmp =
+										reverse_path;
+								for (; tmp != NULL; tmp = tmp->next) {
+									if (tmp->msg_id == ntohl(h->msg_id)) {
+										//Found the reverse path
+										if (send(i, whole_qhit,
+												sizeof(whole_qhit), 0) == -1)
+											perror("send");
+									}
 								}
 							}
 						}
@@ -573,15 +624,6 @@ int main(void)
 						case MSG_PONG:
 							if (h->length == 0) {
 								printf("Received Pong A message\n");
-								//Test ping B message
-								struct P2P_h ping_h = build_header(0x02,
-										MSG_PING, ORG_PORT, 0,
-										self_addr->sin_addr.s_addr, msg_id);
-								unsigned char ping_buffer[sizeof(ping_h)];
-								memcpy(ping_buffer, &ping_h, sizeof(ping_h));
-								if (send(bootfd, ping_buffer,
-										sizeof(ping_buffer), 0) == -1)
-									perror("send");
 							} else {
 								printf("Received Pong B message\n");
 								if (h->length != 0) {
@@ -602,6 +644,26 @@ int main(void)
 										char *some_addr;
 										some_addr = inet_ntoa(entry.ip);
 										printf("Ip-Address: %s\n", some_addr);
+										if (neighbours == NULL) {
+											neighbours =
+													malloc(
+															sizeof(struct P2P_peer_data));
+											neighbours->ip = entry.ip;
+											neighbours->port = entry.port;
+											neighbours->next = NULL;
+											peer_list_head = neighbours;
+											peer_size++;
+										} else {
+											struct P2P_peer_data* tmp =
+													malloc(
+															sizeof(struct P2P_peer_data));
+											tmp->ip = entry.ip;
+											tmp->port = entry.port;
+											tmp->next = NULL;
+											peer_list_head->next = tmp;
+											peer_list_head = tmp;
+											peer_size++;
+										}
 									}
 
 								}
@@ -613,6 +675,22 @@ int main(void)
                 } // END handle data from client
             } // END got new incoming connection
         } // END looping through file descriptors
+		//Check for time based pinging
+		time(&now);
+		if (now - send_ping > 5) {
+			send_ping = now;
+			for (j = 0; j <= fdmax; j++) {
+				if (FD_ISSET(j, &write_fds)) {
+					struct P2P_h ping_h = build_header(0x01, MSG_PING, ORG_PORT,
+							0, self_addr->sin_addr.s_addr, msg_id);
+					unsigned char ping_buffer[sizeof(ping_h)];
+					memcpy(&ping_buffer, &ping_h, sizeof(ping_h));
+					if (send(j, ping_buffer, sizeof(ping_buffer), 0) == -1)
+						perror("send");
+				}
+			}
+			printf("Sent time based Ping\n");
+		}
     } // END for(;;)--and you thought it would never end!
 
     return 0;
