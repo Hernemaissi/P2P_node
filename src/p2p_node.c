@@ -212,7 +212,6 @@ int main(void)
 	unsigned char testkey[] = "testkey";
 	struct P2P_h query_h = build_header(0x01, 0x80, ORG_PORT, strlen(testkey),
 			self_addr->sin_addr.s_addr, get_msg_id());
-	uint16_t pl = ntohs(query_h.length);
 	unsigned char query_buffer[sizeof(query_h) + strlen(testkey)];
 	memcpy(query_buffer, &query_h, sizeof(query_h));
 	memcpy(query_buffer + sizeof(query_h), testkey, strlen(testkey));
@@ -245,20 +244,78 @@ int main(void)
     for(;;) {
         read_fds = master_readable; // copy it
         write_fds = master_writable;
-        if (select(fdmax+1, &read_fds, NULL, NULL, NULL) == -1) {
+        if (select(fdmax+1, &read_fds, &write_fds, NULL, NULL) == -1) {
             perror("select");
             exit(4);
         }
 
-        // run through the existing connections looking for data to read
-        for(i = 0; i <= fdmax; i++) {
-            if (FD_ISSET(i, &read_fds)) { // we got one!!
-            	if (i == STDIN) {
-            		printf("A key was pressed\n");
-            		read(STDIN, input, sizeof(input));
-            		continue;
-            	}
-                if (i == listener) {
+		// run through the existing connections looking for data to read
+		for (i = 0; i <= fdmax; i++) {
+			if (FD_ISSET(i, &read_fds)) { // we got one!!
+				if (i == STDIN) {
+					printf("A key was pressed\n");
+					bzero(input, sizeof(input));
+					read(STDIN, input, sizeof(input));
+					//Send Ping A messsage
+					if (strncmp(input, "pinga", strlen("pinga")) == 0) {
+						for (j = 0; j <= fdmax; j++) {
+							if (FD_ISSET(j, &write_fds)) {
+								struct P2P_h ping_h = build_header(0x01,
+										MSG_PING, ORG_PORT, 0,
+										self_addr->sin_addr.s_addr, msg_id);
+								unsigned char ping_buffer[sizeof(ping_h)];
+								memcpy(&ping_buffer, &ping_h, sizeof(ping_h));
+								if (send(j, ping_buffer,
+										sizeof(ping_buffer), 0) == -1)
+									perror("send");
+							}
+						}
+						printf("Sent Ping A message\n");
+					} else if (strncmp(input, "pingb", strlen("pingb")) == 0) {
+						for (j = 0; j <= fdmax; j++) {
+							if (FD_ISSET(j, &write_fds)) {
+								struct P2P_h ping_h = build_header(0x02,
+										MSG_PING, ORG_PORT, 0,
+										self_addr->sin_addr.s_addr, msg_id);
+								unsigned char ping_buffer[sizeof(ping_h)];
+								memcpy(ping_buffer, &ping_h, sizeof(ping_h));
+								if (send(j, ping_buffer,
+										sizeof(ping_buffer), 0) == -1)
+									perror("send");
+							}
+						}
+						printf("Sent Ping B message\n");
+					} else if (strncmp(input, "query", strlen("query")) == 0) {
+						unsigned char search_key[100];
+						bzero(search_key, sizeof(search_key));
+						printf("Enter search key:\n");
+						scanf("%s", search_key);
+						struct P2P_h query_h = build_header(0x01, 0x80,
+								ORG_PORT, strlen(search_key),
+								self_addr->sin_addr.s_addr, get_msg_id());
+						unsigned char query_buffer[sizeof(query_h)
+								+ strlen(search_key)];
+						memcpy(query_buffer, &query_h, sizeof(query_h));
+						memcpy(query_buffer + sizeof(query_h), search_key,
+								strlen(search_key));
+						if (send(bootfd, query_buffer, sizeof(query_buffer), 0)
+								== -1)
+							perror("send");
+						printf ("Sent query with key %s\n", search_key);
+					} else if (strncmp(input, "bye", strlen("bye")) == 0) {
+						struct P2P_h bye_h = build_header(0x01, MSG_BYE, ORG_PORT,
+								0, self_addr->sin_addr.s_addr, msg_id);
+						unsigned char join_buffer[sizeof(bye_h)];
+						memcpy(join_buffer, &bye_h, sizeof(bye_h));
+						if (send(bootfd, join_buffer, sizeof(join_buffer), 0)
+								== -1)
+							perror("send");
+					} else {
+						printf("Command not recognized. Known commands are: 'pinga', 'pingb', 'query' and 'bye'\n");
+					}
+					continue;
+				}
+				if (i == listener) {
                     // handle new connections
                     addrlen = sizeof remoteaddr;
                     newfd = accept(listener,
@@ -310,14 +367,16 @@ int main(void)
 						switch (type) {
 						case MSG_PING:
 							if (h->ttl == PING_TTL_HB) {
+								printf("Received Ping A message\n");
 								//Answer with Pong A message
 								h->msg_type = MSG_PONG;
 								unsigned char h_buffer[HLEN];
 								memcpy(h_buffer, h, HLEN);
 								if (send(i, h_buffer, sizeof(h_buffer), 0) == -1)
 									perror("send");
-								printf("Sent Pong A");
+								printf("Sent Pong A\n");
 							} else {
+								printf("Received Ping B message.\n");
 								h->msg_type = MSG_PONG;
 								h->length = htons(PONG_MINLEN + peer_size * PONG_ENTRYLEN);
 								struct P2P_pong_front f;
@@ -339,6 +398,7 @@ int main(void)
 								if (send(i, pongB_buffer,
 										sizeof(pongB_buffer), 0) == -1)
 									perror("send");
+								printf ("Sent Pong B\n");
 
 							}
 							break;
@@ -418,18 +478,21 @@ int main(void)
 							}
 							//Forward to up to 5 peers, drop ttl by one
 							unsigned char whole_query[HLEN + strlen(received_key)];
+							h->ttl--;
 							memcpy(whole_query, h, HLEN);
 							memcpy(whole_query + HLEN, received_key, strlen(received_key));
 							int peers = 0;
 							int fds;
-							for (fds = 0; fds < fdmax; fds++) {
-								//Don't send to self, or listener
-								if (fds != listener && fds != i) {
-									if (send(fds, whole_query, sizeof(whole_query), 0) == -1)
-																			perror("send");
-									peers++;
-									if (peers == 5) {
-										break;
+							for (fds = 0; fds <= fdmax; fds++) {
+								if (FD_ISSET(fds, &write_fds)) {
+									if (fds != listener && fds != i) {
+										if (send(fds, whole_query,
+												sizeof(whole_query), 0) == -1)
+											perror("send");
+										peers++;
+										if (peers == 5) {
+											break;
+										}
 									}
 								}
 							}
@@ -437,6 +500,7 @@ int main(void)
 							break;
 						case MSG_QHIT:
 						{
+							printf("Received query hit!\n");
 							//TODO: Check if hit to our own query
 							//Find reverse path, drop if it doesn't exist
 							unsigned char qhit_front_buf[sizeof(struct P2P_qhit_front)];
